@@ -1,62 +1,67 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 
 import rospy
-from duckietown_msgs.msg import Twist2DStamped, FSMState
+from geometry_msgs.msg import Twist
+from duckietown_msgs.msg import FSMState
+import time
 
 class SquareDriver:
     def __init__(self):
-        self.cmd_pub = rospy.Publisher('/car_cmd_switch_node/cmd', Twist2DStamped, queue_size=1)
-        rospy.Subscriber('/fsm_node/mode', FSMState, self.fsm_callback)
-
-        self.is_autonomous = False
-        self.last_time = rospy.Time.now()
-        self.state = "STOP"
+        self.pub = rospy.Publisher('cmd_vel', Twist, queue_size=10)
+        self.current_mode = None
+        rospy.Subscriber('fsm_mode', FSMState, self.fsm_callback)
+        rospy.on_shutdown(self.shutdown)
 
     def fsm_callback(self, msg):
-        # Check for autonomous mode
-        if msg.state == 'LANE_FOLLOWING':
-            self.is_autonomous = True
-            self.last_time = rospy.Time.now()
-            self.state = "DRIVE_STRAIGHT"
-        else:
-            self.is_autonomous = False
-            self.send_stop()
+        self.current_mode = msg.state
 
-    def send_drive_command(self, v, omega):
-        cmd_msg = Twist2DStamped()
-        cmd_msg.v = v
-        cmd_msg.omega = omega
-        self.cmd_pub.publish(cmd_msg)
+    def drive_straight(self, speed, duration):
+        twist = Twist()
+        twist.linear.x = speed
+        twist.angular.z = 0
+        end_time = rospy.Time.now() + rospy.Duration(duration)
+        while rospy.Time.now() < end_time:
+            self.pub.publish(twist)
+        self.pub.publish(Twist())  # Stop the robot after moving straight
 
-    def send_stop(self):
-        self.send_drive_command(0, 0)
+    def turn(self, speed, duration):
+        twist = Twist()
+        twist.linear.x = 0
+        twist.angular.z = speed
+        end_time = rospy.Time.now() + rospy.Duration(duration)
+        while rospy.Time.now() < end_time:
+            self.pub.publish(twist)
+        self.pub.publish(Twist())  # Stop the robot after turning
 
-    def control_loop(self):
-        if not self.is_autonomous:
+    def execute_square(self):
+        if self.current_mode != 'AUTONOMOUS':
             return
 
-        current_time = rospy.Time.now()
-        elapsed = (current_time - self.last_time).to_sec()
+        speed = 0.2  # Adjust as needed
+        straight_duration = 5  # Adjust as needed
+        turn_duration = 2  # Adjust as needed
 
-        if self.state == "DRIVE_STRAIGHT" and elapsed >= 4.0:  # Time to drive 1m
-            self.send_stop()
-            self.last_time = current_time
-            self.state = "STOP"
-        elif self.state == "STOP" and elapsed >= 5.0:
-            self.send_drive_command(0, 1.0)  # Turn 90 degrees
-            self.last_time = current_time
-            self.state = "TURN"
-        elif self.state == "TURN" and elapsed >= 1.0:
-            self.send_drive_command(0.25, 0)  # Drive straight again
-            self.last_time = current_time
-            self.state = "DRIVE_STRAIGHT"
+        for _ in range(4):
+            self.drive_straight(speed, straight_duration)
+            time.sleep(5)  # Wait for 5 seconds
+            self.turn(speed, turn_duration)
+
+    def shutdown(self):
+        rospy.loginfo("Stopping the robot...")
+        self.pub.publish(Twist())  # Stop the robot
+        rospy.sleep(1)
+
+def main():
+    rospy.init_node('square_driver', anonymous=True)
+    driver = SquareDriver()
+    rate = rospy.Rate(10)
+    try:
+        while not rospy.is_shutdown():
+            driver.execute_square()
+            rate.sleep()
+    except rospy.ROSInterruptException:
+        pass
 
 if __name__ == '__main__':
-    rospy.init_node('square_driver')
-    driver = SquareDriver()
-    rate = rospy.Rate(10)  # 10 Hz
-
-    while not rospy.is_shutdown():
-        driver.control_loop()
-        rate.sleep()
+    main()
 
